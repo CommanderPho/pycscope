@@ -21,9 +21,8 @@ __usage__ = """Usage: pycscope.py [-D] [-R] [-S] [-V] [-f reffile] [-e path1[,pa
 -i srclistfile    Use the contents of 'srclistfile' as the list of source files to scan
 -e path1,path2..  Exclude the list of paths from being parsed"""
 
-import getopt, sys, os, re
+import getopt, sys, os, string, re
 import keyword, parser, symbol, token
-import tokenize
 
 
 class Mark(object):
@@ -120,8 +119,11 @@ def main(argv=None):
         if o == "-f":
             indexfn = a
         if o == "-i":
-            with open(a) as f:
-                args.extend(x.rstrip() for x in f)
+            args.extend(list(map(str.rstrip, open(a, 'r').readlines())))
+        if o in ("-e", "--exclude"):
+            # Exclude list should contain full path to each file or directory to
+            # exclude relative to the current working directory.
+            exclude = [ os.path.normpath(relpath) for relpath in a.split(',') ]
 
     # Search current dir by default
     if len(args) == 0:
@@ -155,7 +157,7 @@ def writeIndex(basepath, fout, indexbuff, fnamesbuff):
     """
     # Write the header and index
     index = ''.join(indexbuff)
-    index_len = len(index.encode() if isinstance(u'' , str) else index)
+    index_len = len(index.encode('utf-8'))
     hdr_len = len(basepath) + 25
     fout.write("cscope 15 %s -c %010d" % (basepath, hdr_len + index_len))
     fout.write(index)
@@ -182,8 +184,10 @@ def work(basepath, gen, debug):
             indexbuff_len = parseFile(basepath, fname, indexbuff, indexbuff_len, fnamesbuff, dump=debug)
         except (SyntaxError, AssertionError) as e:
             print("pycscope.py: %s: Line %s: %s" % (e.filename, e.lineno, e))
-        except Exception as e:
-            print("pycscope.py: %s: %s" % (fname, e))
+            pass
+        except UnicodeDecodeError as e:
+            print("pycscope.py: %s: %s" % (e.filename, e))
+            pass
 
     return indexbuff, fnamesbuff
 
@@ -236,9 +240,21 @@ def parseFile(basepath, relpath, indexbuff, indexbuff_len, fnamesbuff, dump=Fals
     """
     # Open the file.
     fullpath = os.path.join(basepath, relpath)
-    bestopen = getattr(tokenize, 'open', open)
-    with bestopen(fullpath) as f:
-        filecontents = f.read()
+    try:
+        f = open(fullpath, 'rU')
+    except IOError as e:
+        # Can't open a file, emit message and ignore
+        print("pycscope.py: %s" % e)
+        return indexbuff_len
+
+    # Get the contents.
+    with f:
+        try:
+            filecontents = f.read()
+        except UnicodeDecodeError as e:
+            e.filename = fullpath
+            raise e
+
     # Add the file mark to the index
     fnamesbuff.append(relpath)
     indexbuff.append("\n%s%s\n\n" % (Mark(Mark.FILE), relpath))
